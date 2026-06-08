@@ -38,6 +38,13 @@ interface WhatsAppMessage {
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
   /**
+   * Set when the customer taps a quick-reply button on a message
+   * template. Meta delivers these as `type: "button"`, not as the
+   * `interactive.button_reply` shape used by non-template interactive
+   * messages.
+   */
+  button?: { payload?: string; text?: string }
+  /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
    * we put on the button/row when sending — the Flows engine uses this
@@ -577,11 +584,14 @@ async function processMessage(
     'text', 'image', 'document', 'audio', 'video',
     'location', 'template', 'interactive',
   ])
-  const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
-    ? message.type
-    : message.type === 'sticker'
-      ? 'image'   // stickers are images
-      : 'text'    // reaction, unknown → text fallback
+  const contentType =
+    message.type === 'button'
+      ? 'interactive' // template quick-reply buttons
+      : ALLOWED_CONTENT_TYPES.has(message.type)
+        ? message.type
+        : message.type === 'sticker'
+          ? 'image'   // stickers are images
+          : 'text'    // reaction, unknown → text fallback
 
   // Determine whether this is the contact's very first inbound message
   // BEFORE we insert, so the count is accurate. Covers the case where
@@ -849,6 +859,21 @@ async function parseMessageContent(
         }
       }
       return { ...empty, contentText: '[Interactive reply]' }
+    }
+
+    case 'button': {
+      // Template quick-reply buttons arrive in Meta webhooks as
+      // `type: "button"` with a sibling `button` object. Normalize them
+      // to the same internal shape as interactive replies so the inbox
+      // renders the tapped option legibly instead of the unsupported-type
+      // fallback.
+      const text = message.button?.text?.trim()
+      const payload = message.button?.payload?.trim()
+      return {
+        ...empty,
+        contentText: text || payload || '[Button reply]',
+        interactiveReplyId: payload || text || null,
+      }
     }
 
     default:
