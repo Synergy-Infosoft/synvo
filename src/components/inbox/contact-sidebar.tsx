@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
+import { formatCurrency } from "@/lib/currency";
 import type { Contact, Deal, ContactNote, Tag } from "@/types";
 import {
   Phone,
@@ -12,7 +13,7 @@ import {
   Check,
   User,
   Tag as TagIcon,
-  DollarSign,
+  IndianRupee,
   StickyNote,
   Plus,
 } from "lucide-react";
@@ -209,7 +210,7 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           {/* Active Deals */}
           <div>
             <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-slate-500">
-              <DollarSign className="h-3 w-3" />
+              <IndianRupee className="h-3 w-3" />
               Active Deals
             </div>
             <div className="mt-2 space-y-2">
@@ -225,10 +226,7 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                       {deal.title}
                     </p>
                     <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
-                      <span>
-                        {deal.currency ?? "$"}
-                        {deal.value.toLocaleString()}
-                      </span>
+                      <span>{formatCurrency(deal.value, deal.currency)}</span>
                       {deal.stage && (
                         <span
                           className="rounded-full px-1.5 py-0.5 text-[10px]"

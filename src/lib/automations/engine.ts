@@ -14,6 +14,7 @@ import type {
   CreateDealStepConfig,
   AssignConversationStepConfig,
 } from '@/types'
+import { DEFAULT_CURRENCY } from '@/lib/currency'
 import { supabaseAdmin } from './admin-client'
 import { engineSendText, engineSendTemplate } from './meta-send'
 
@@ -474,6 +475,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         contact_id: args.contactId,
         title: interpolate(cfg.title, args),
         value: cfg.value ?? 0,
+        currency: DEFAULT_CURRENCY,
         status: 'open',
       })
       return 'deal created'

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
+import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal } from '@/types';
 import {
@@ -31,7 +32,7 @@ import {
   Trash2,
   Save,
   X,
-  DollarSign,
+  IndianRupee,
 } from 'lucide-react';
 
 interface ContactDetailViewProps {
@@ -655,12 +656,8 @@ export function ContactDetailView({
                         </div>
                         <div className="mt-1.5 flex items-center justify-between text-xs text-slate-400">
                           <span className="flex items-center gap-1">
-                            <DollarSign className="size-3" />
-                            {new Intl.NumberFormat('en-US', {
-                              style: 'currency',
-                              currency: deal.currency || 'USD',
-                              maximumFractionDigits: 0,
-                            }).format(Number(deal.value || 0))}
+                            <IndianRupee className="size-3" />
+                            {formatCurrency(deal.value, deal.currency)}
                           </span>
                           {deal.status && deal.status !== 'open' && (
                             <span

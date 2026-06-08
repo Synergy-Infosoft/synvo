@@ -2,8 +2,9 @@
 
 import { useMemo } from "react";
 import type { Deal, PipelineStage } from "@/types";
+import { formatCurrency } from "@/lib/currency";
 import {
-  DollarSign,
+  IndianRupee,
   TrendingUp,
   Target,
   BarChart3,
@@ -21,15 +22,6 @@ import {
 interface PipelineAnalyticsProps {
   stages: PipelineStage[];
   deals: Deal[];
-}
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
 }
 
 /**
@@ -107,10 +99,10 @@ export function PipelineAnalytics({ stages, deals }: PipelineAnalyticsProps) {
           tooltip="Count of every deal in this pipeline that isn't marked as Lost. Won deals are still included."
         />
         <Metric
-          icon={<DollarSign className="h-4 w-4 text-primary" />}
+          icon={<IndianRupee className="h-4 w-4 text-primary" />}
           label="Pipeline Value"
           value={formatCurrency(stats.totalValue)}
-          tooltip="Sum of the dollar values of all deals in this pipeline, excluding deals marked as Lost."
+          tooltip="Sum of the values of all deals in this pipeline, excluding deals marked as Lost."
         />
         <Metric
           icon={<Target className="h-4 w-4 text-blue-400" />}

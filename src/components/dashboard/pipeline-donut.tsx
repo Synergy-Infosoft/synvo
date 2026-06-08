@@ -2,6 +2,7 @@
 
 import { GitBranch } from 'lucide-react'
 import type { PipelineDonutData } from '@/lib/dashboard/types'
+import { formatCurrencyShort } from '@/lib/currency'
 import { EmptyState } from './empty-state'
 import { Skeleton } from './skeleton'
 
@@ -135,10 +136,4 @@ function arcPath(cx: number, cy: number, r: number, startRad: number, endRad: nu
   const y2 = cy + r * Math.sin(endRad)
   const largeArc = endRad - startRad > Math.PI ? 1 : 0
   return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`
-}
-
-function formatCurrencyShort(v: number): string {
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}k`
-  return `$${v.toFixed(0)}`
 }

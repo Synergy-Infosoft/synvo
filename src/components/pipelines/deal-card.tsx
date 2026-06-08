@@ -1,6 +1,7 @@
 "use client";
 
 import type { Deal, PipelineStage } from "@/types";
+import { formatCurrency } from "@/lib/currency";
 import { Calendar, Check, X } from "lucide-react";
 
 interface DealCardProps {
@@ -8,15 +9,6 @@ interface DealCardProps {
   stage: PipelineStage | null;
   onEdit: (deal: Deal) => void;
   isOverlay?: boolean;
-}
-
-function formatCurrency(value: number, currency?: string) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currency || "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(Number(value || 0));
 }
 
 function formatDate(dateStr: string) {
