@@ -1,6 +1,12 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
@@ -40,15 +46,12 @@ import type {
   AccountMember,
   AutomationStepType,
   AutomationTriggerType,
+  CustomField,
   KeywordMatchTriggerConfig,
   MessageTemplate,
   Tag as TagRecord,
 } from "@/types"
-import { hasMinRole } from "@/lib/auth/roles"
-import {
-  normalizeKeywordMatchType,
-  parseKeywordList,
-} from "@/lib/automations/keyword-list"
+import { normalizeKeywordMatchType } from "@/lib/automations/keyword-list"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
 
@@ -73,25 +76,6 @@ export interface BuilderInitial {
   is_active: boolean
   steps: BuilderStep[]
 }
-
-interface BuilderResources {
-  tags: TagRecord[]
-  members: AccountMember[]
-  templates: MessageTemplate[]
-  loading: boolean
-  error: string | null
-}
-
-const EMPTY_RESOURCES: BuilderResources = {
-  tags: [],
-  members: [],
-  templates: [],
-  loading: true,
-  error: null,
-}
-
-const SELECT_CLASS =
-  "w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
 
 // ------------------------------------------------------------
 // Step metadata — one source of truth for icon + label + border color
@@ -184,6 +168,298 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
 }
 
 // ------------------------------------------------------------
+// Account resources (tags, members, approved templates)
+//
+// Loaded once at the builder root and shared via context so the
+// tag / agent / template pickers below can offer existing resources
+// by name instead of asking the user to paste raw UUIDs. Every picker
+// falls back to a raw input when its list is empty (fresh account or
+// an older deployment), so an automation is always authorable.
+// ------------------------------------------------------------
+
+interface AutomationResources {
+  tags: TagRecord[]
+  members: AccountMember[]
+  templates: MessageTemplate[]
+  customFields: CustomField[]
+}
+
+const ResourcesContext = createContext<AutomationResources>({
+  tags: [],
+  members: [],
+  templates: [],
+  customFields: [],
+})
+
+function useResources(): AutomationResources {
+  return useContext(ResourcesContext)
+}
+
+function ResourcesProvider({ children }: { children: ReactNode }) {
+  const [tags, setTags] = useState<TagRecord[]>([])
+  const [members, setMembers] = useState<AccountMember[]>([])
+  const [templates, setTemplates] = useState<MessageTemplate[]>([])
+  const [customFields, setCustomFields] = useState<CustomField[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const supabase = createClient()
+
+    // Tags, templates and custom fields come straight from the DB — RLS
+    // scopes them to the caller's account. Only APPROVED templates can
+    // actually be sent (anything else 400s at send time), matching the
+    // broadcast picker.
+    void (async () => {
+      const [tagsRes, templatesRes, customFieldsRes] = await Promise.all([
+        supabase.from("tags").select("*").order("name"),
+        supabase
+          .from("message_templates")
+          .select("*")
+          .eq("status", "APPROVED")
+          .order("name"),
+        supabase.from("custom_fields").select("*").order("field_name"),
+      ])
+      if (cancelled) return
+      setTags((tagsRes.data as TagRecord[] | null) ?? [])
+      setTemplates((templatesRes.data as MessageTemplate[] | null) ?? [])
+      setCustomFields((customFieldsRes.data as CustomField[] | null) ?? [])
+    })()
+
+    // Members go through the API so we inherit its email-visibility
+    // rules (agents/viewers don't see emails). Unreachable on older
+    // deployments → pickers fall back to a raw agent-id input.
+    void (async () => {
+      try {
+        const res = await fetch("/api/account/members", { cache: "no-store" })
+        if (!res.ok) return
+        const json = (await res.json()) as { members?: AccountMember[] }
+        if (!cancelled) setMembers(json.members ?? [])
+      } catch {
+        // Members endpoint absent — caller falls back to raw input.
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return (
+    <ResourcesContext.Provider value={{ tags, members, templates, customFields }}>
+      {children}
+    </ResourcesContext.Provider>
+  )
+}
+
+const SELECT_CLASS =
+  "w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white focus:border-primary focus:outline-none"
+
+/** Tag dropdown by name + color, storing the tag's id. Falls back to a
+ *  raw id input when no tags exist yet. */
+function TagSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { tags } = useResources()
+  if (tags.length === 0) {
+    return (
+      <Input
+        placeholder="Tag id"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-slate-800 text-white"
+      />
+    )
+  }
+  const selected = tags.find((t) => t.id === value)
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className="h-3 w-3 shrink-0 rounded-full border border-slate-600"
+        style={{ backgroundColor: selected?.color ?? "transparent" }}
+        aria-hidden
+      />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={SELECT_CLASS}
+      >
+        <option value="">Select a tag…</option>
+        {tags.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+        {/* Preserve a saved tag that's since been deleted so editing an
+            existing automation doesn't silently drop it. */}
+        {value && !selected && (
+          <option value={value}>{value} (unknown tag)</option>
+        )}
+      </select>
+    </div>
+  )
+}
+
+/** Contact-field dropdown for "Update Contact Field": built-in columns plus
+ *  any account custom fields (stored as `custom:<id>`). A saved custom field
+ *  that's since been deleted is preserved as a labelled option so editing an
+ *  existing automation doesn't silently drop it. */
+function ContactFieldSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { customFields } = useResources()
+  const customValue = value.startsWith("custom:") ? value : ""
+  const knownCustom =
+    customValue && customFields.some((f) => `custom:${f.id}` === customValue)
+  return (
+    <select
+      value={value || "name"}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="name">Name</option>
+      <option value="email">Email</option>
+      <option value="company">Company</option>
+      {customFields.length > 0 && (
+        <optgroup label="Custom fields">
+          {customFields.map((f) => (
+            <option key={f.id} value={`custom:${f.id}`}>
+              {f.field_name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {customValue && !knownCustom && (
+        <option value={customValue}>{customValue} (unknown field)</option>
+      )}
+    </select>
+  )
+}
+
+/** Agent dropdown by name, storing the member's user_id. Falls back to
+ *  a raw id input when the member list is unavailable. */
+function AgentSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { members } = useResources()
+  if (members.length === 0) {
+    return (
+      <Input
+        placeholder="Agent id"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-slate-800 text-white"
+      />
+    )
+  }
+  const selected = members.find((m) => m.user_id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="">Select an agent…</option>
+      {members.map((m) => (
+        <option key={m.user_id} value={m.user_id}>
+          {m.full_name || m.email || m.user_id}
+        </option>
+      ))}
+      {value && !selected && (
+        <option value={value}>{value} (unknown agent)</option>
+      )}
+    </select>
+  )
+}
+
+/** Template dropdown showing approved templates by name + language,
+ *  storing both template_name and language. Falls back to manual name +
+ *  language inputs when no approved templates are synced yet. */
+function SendTemplateFields({
+  templateName,
+  language,
+  onChange,
+}: {
+  templateName: string
+  language: string
+  onChange: (patch: { template_name: string; language: string }) => void
+}) {
+  const { templates } = useResources()
+
+  if (templates.length === 0) {
+    return (
+      <>
+        <FieldBlock label="Template name">
+          <Input
+            value={templateName}
+            onChange={(e) =>
+              onChange({ template_name: e.target.value, language })
+            }
+            className="bg-slate-800 text-white"
+          />
+        </FieldBlock>
+        <FieldBlock label="Language">
+          <Input
+            value={language}
+            onChange={(e) =>
+              onChange({ template_name: templateName, language: e.target.value })
+            }
+            className="bg-slate-800 text-white"
+          />
+        </FieldBlock>
+      </>
+    )
+  }
+
+  // Encode name + language in the option value so two templates that
+  // share a name across languages stay distinct.
+  const toValue = (name: string, lang: string) => `${name}::${lang}`
+  const current = templateName ? toValue(templateName, language) : ""
+  const hasMatch = templates.some(
+    (t) => toValue(t.name, t.language ?? "en_US") === current,
+  )
+
+  return (
+    <FieldBlock label="Template">
+      <select
+        value={current}
+        onChange={(e) => {
+          const [name, lang] = e.target.value.split("::")
+          onChange({ template_name: name ?? "", language: lang ?? "" })
+        }}
+        className={SELECT_CLASS}
+      >
+        <option value="">Select a template…</option>
+        {templates.map((t) => {
+          const lang = t.language ?? "en_US"
+          return (
+            <option key={t.id} value={toValue(t.name, lang)}>
+              {t.name} ({lang})
+            </option>
+          )
+        })}
+        {current && !hasMatch && (
+          <option value={current}>
+            {templateName} ({language || "unknown"}) — not in approved list
+          </option>
+        )}
+      </select>
+    </FieldBlock>
+  )
+}
+
+// ------------------------------------------------------------
 // Main builder component
 // ------------------------------------------------------------
 
@@ -193,60 +469,6 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
   const [state, setState] = useState<BuilderInitial>(initial)
   const [saving, setSaving] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [resources, setResources] = useState<BuilderResources>(EMPTY_RESOURCES)
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadResources() {
-      try {
-        const supabase = createClient()
-        const [tagsResult, templatesResult, membersResponse] = await Promise.all([
-          supabase.from("tags").select("*").order("name"),
-          supabase
-            .from("message_templates")
-            .select("*")
-            .eq("status", "APPROVED")
-            .order("created_at", { ascending: false }),
-          fetch("/api/account/members", { cache: "no-store" }),
-        ])
-
-        if (tagsResult.error) throw tagsResult.error
-        if (templatesResult.error) throw templatesResult.error
-        if (!membersResponse.ok) {
-          const payload = (await membersResponse.json().catch(() => ({}))) as {
-            error?: string
-          }
-          throw new Error(payload.error ?? "Failed to load members")
-        }
-
-        const membersPayload = (await membersResponse.json()) as {
-          members?: AccountMember[]
-        }
-        if (cancelled) return
-
-        setResources({
-          tags: (tagsResult.data ?? []) as TagRecord[],
-          templates: (templatesResult.data ?? []) as MessageTemplate[],
-          members: membersPayload.members ?? [],
-          loading: false,
-          error: null,
-        })
-      } catch (err) {
-        if (cancelled) return
-        const message =
-          err instanceof Error ? err.message : "Failed to load builder options"
-        console.error("Failed to load automation builder options:", err)
-        setResources({ ...EMPTY_RESOURCES, loading: false, error: message })
-      }
-    }
-
-    void loadResources()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   function patchTop<K extends keyof BuilderInitial>(key: K, value: BuilderInitial[K]) {
     setState((s) => ({ ...s, [key]: value }))
@@ -368,24 +590,24 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
       <div className="relative flex-1 overflow-y-auto">
         <div className="absolute inset-0 bg-[radial-gradient(circle,#1e293b_1px,transparent_1px)] [background-size:20px_20px] pointer-events-none" />
         <div className="relative mx-auto flex max-w-2xl flex-col items-center gap-0 px-4 py-10">
-          <TriggerCard
-            type={state.trigger_type}
-            config={state.trigger_config}
-            resources={resources}
-            onTypeChange={(t) => patchTop("trigger_type", t)}
-            onConfigChange={(c) => patchTop("trigger_config", c)}
-          />
-          <StepList
-            steps={state.steps}
-            parentPath={[]}
-            expandedId={expandedId}
-            setExpandedId={setExpandedId}
-            updateStep={updateStep}
-            addStepAt={addStepAt}
-            deleteStepAt={deleteStepAt}
-            moveStepAt={moveStepAt}
-            resources={resources}
-          />
+          <ResourcesProvider>
+            <TriggerCard
+              type={state.trigger_type}
+              config={state.trigger_config}
+              onTypeChange={(t) => patchTop("trigger_type", t)}
+              onConfigChange={(c) => patchTop("trigger_config", c)}
+            />
+            <StepList
+              steps={state.steps}
+              parentPath={[]}
+              expandedId={expandedId}
+              setExpandedId={setExpandedId}
+              updateStep={updateStep}
+              addStepAt={addStepAt}
+              deleteStepAt={deleteStepAt}
+              moveStepAt={moveStepAt}
+            />
+          </ResourcesProvider>
         </div>
       </div>
     </div>
@@ -399,13 +621,11 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
 function TriggerCard({
   type,
   config,
-  resources,
   onTypeChange,
   onConfigChange,
 }: {
   type: AutomationTriggerType
   config: Record<string, unknown>
-  resources: BuilderResources
   onTypeChange: (t: AutomationTriggerType) => void
   onConfigChange: (c: Record<string, unknown>) => void
 }) {
@@ -461,11 +681,15 @@ function TriggerCard({
               />
             )}
             {type === "tag_added" && (
-              <TagSelect
-                value={(config.tag_id as string) ?? ""}
-                resources={resources}
-                onChange={(tagId) => onConfigChange({ ...config, tag_id: tagId })}
-              />
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-400">
+                  Tag
+                </label>
+                <TagSelect
+                  value={(config.tag_id as string) ?? ""}
+                  onChange={(v) => onConfigChange({ ...config, tag_id: v })}
+                />
+              </div>
             )}
             {type === "time_based" && (
               <Input
@@ -492,14 +716,29 @@ function KeywordMatchConfig({
   onChange: (c: Record<string, unknown>) => void
 }) {
   const keywords = config?.keywords ?? []
-  const [rawKeywords, setRawKeywords] = useState(() => keywords.join(", "))
   const matchType = normalizeKeywordMatchType(config?.match_type)
+  // Keep a local draft string so the comma and trailing space aren't
+  // stripped on every keystroke (which made multi-word, comma-separated
+  // entry like "SEO, search engine optimization" impossible to type).
+  // We only parse into the keywords array on blur, then re-display the
+  // cleaned, rejoined form. Seeded once on mount; this component remounts
+  // when the trigger type changes, so the seed stays in sync.
+  const [draft, setDraft] = useState(keywords.join(", "))
 
   useEffect(() => {
     if (config?.match_type !== matchType) {
       onChange({ ...config, match_type: matchType })
     }
   }, [config, matchType, onChange])
+
+  function commit() {
+    const parsed = draft
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+    setDraft(parsed.join(", "))
+    onChange({ ...config, keywords: parsed, match_type: matchType })
+  }
 
   return (
     <div className="space-y-2">
@@ -508,17 +747,16 @@ function KeywordMatchConfig({
           Keywords (comma-separated)
         </label>
         <Input
-          value={rawKeywords}
-          onChange={(e) => {
-            const value = e.target.value
-            setRawKeywords(value)
-            onChange({
-              ...config,
-              keywords: parseKeywordList(value),
-              match_type: matchType,
-            })
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              commit()
+            }
           }}
-          onBlur={() => setRawKeywords(parseKeywordList(rawKeywords).join(", "))}
+          placeholder="e.g. pricing, demo request, talk to sales"
           className="bg-slate-800 text-white"
         />
       </div>
@@ -561,7 +799,6 @@ interface StepListProps {
   addStepAt: (parent: ParentScope, index: number, type: AutomationStepType) => void
   deleteStepAt: (path: StepPath) => void
   moveStepAt: (path: StepPath, direction: -1 | 1) => void
-  resources: BuilderResources
 }
 
 function StepList(props: StepListProps) {
@@ -657,7 +894,6 @@ function StepRenderer({
             <div className="border-t border-slate-800 px-4 py-3">
               <StepEditor
                 step={step}
-                resources={props.resources}
                 onChange={(next) => props.updateStep(path, () => next)}
               />
               <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-800 pt-3">
@@ -796,11 +1032,9 @@ function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
 
 function StepEditor({
   step,
-  resources,
   onChange,
 }: {
   step: BuilderStep
-  resources: BuilderResources
   onChange: (s: BuilderStep) => void
 }) {
   const cfg = step.step_config
@@ -821,21 +1055,11 @@ function StepEditor({
       )
     case "send_template":
       return (
-        <>
-          <FieldBlock label="Approved template">
-            <TemplateSelect
-              templateName={(cfg.template_name as string) ?? ""}
-              language={(cfg.language as string) ?? "en_US"}
-              resources={resources}
-              onChange={(template) =>
-                set({
-                  template_name: template?.name ?? "",
-                  language: template?.language ?? "en_US",
-                })
-              }
-            />
-          </FieldBlock>
-        </>
+        <SendTemplateFields
+          templateName={(cfg.template_name as string) ?? ""}
+          language={(cfg.language as string) ?? ""}
+          onChange={(patch) => set(patch)}
+        />
       )
     case "add_tag":
     case "remove_tag":
@@ -843,8 +1067,7 @@ function StepEditor({
         <FieldBlock label="Tag">
           <TagSelect
             value={(cfg.tag_id as string) ?? ""}
-            resources={resources}
-            onChange={(tagId) => set({ tag_id: tagId })}
+            onChange={(v) => set({ tag_id: v })}
           />
         </FieldBlock>
       )
@@ -863,10 +1086,9 @@ function StepEditor({
           </FieldBlock>
           {cfg.mode === "specific" && (
             <FieldBlock label="Agent">
-              <MemberSelect
+              <AgentSelect
                 value={(cfg.agent_id as string) ?? ""}
-                resources={resources}
-                onChange={(agentId) => set({ agent_id: agentId })}
+                onChange={(v) => set({ agent_id: v })}
               />
             </FieldBlock>
           )}
@@ -876,20 +1098,16 @@ function StepEditor({
       return (
         <>
           <FieldBlock label="Field">
-            <select
+            <ContactFieldSelect
               value={(cfg.field as string) ?? "name"}
-              onChange={(e) => set({ field: e.target.value })}
-              className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-white"
-            >
-              <option value="name">Name</option>
-              <option value="email">Email</option>
-              <option value="company">Company</option>
-            </select>
+              onChange={(v) => set({ field: v })}
+            />
           </FieldBlock>
           <FieldBlock label="Value">
             <Input
               value={(cfg.value as string) ?? ""}
               onChange={(e) => set({ value: e.target.value })}
+              placeholder="Text or {{ vars.x }} / {{ message.text }}"
               className="bg-slate-800 text-white"
             />
           </FieldBlock>
@@ -969,27 +1187,21 @@ function StepEditor({
               <option value="time_of_day">Time of day</option>
             </select>
           </FieldBlock>
-          <FieldBlock label={cfg.subject === "tag_presence" ? "Tag" : "Operand"}>
-            {cfg.subject === "tag_presence" ? (
-              <TagSelect
-                value={(cfg.operand as string) ?? ""}
-                resources={resources}
-                onChange={(tagId) => set({ operand: tagId })}
-              />
-            ) : (
-              <Input
-                placeholder={
-                  cfg.subject === "time_of_day"
-                    ? "HH:mm-HH:mm"
-                    : cfg.subject === "contact_field"
-                    ? "name / email / company"
-                    : ""
-                }
-                value={(cfg.operand as string) ?? ""}
-                onChange={(e) => set({ operand: e.target.value })}
-                className="bg-slate-800 text-white"
-              />
-            )}
+          <FieldBlock label="Operand">
+            <Input
+              placeholder={
+                cfg.subject === "time_of_day"
+                  ? "HH:mm-HH:mm"
+                  : cfg.subject === "contact_field"
+                  ? "name / email / company"
+                  : cfg.subject === "tag_presence"
+                  ? "tag id"
+                  : ""
+              }
+              value={(cfg.operand as string) ?? ""}
+              onChange={(e) => set({ operand: e.target.value })}
+              className="bg-slate-800 text-white"
+            />
           </FieldBlock>
           {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
             <FieldBlock label="Value">
@@ -1030,173 +1242,6 @@ function StepEditor({
     default:
       return null
   }
-}
-
-function TagSelect({
-  value,
-  resources,
-  onChange,
-}: {
-  value: string
-  resources: BuilderResources
-  onChange: (tagId: string) => void
-}) {
-  const selected = resources.tags.find((tag) => tag.id === value)
-  const selectValue = value && !selected ? "__current" : value
-
-  return (
-    <>
-      <select
-        value={selectValue}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={resources.loading && resources.tags.length === 0}
-        className={SELECT_CLASS}
-      >
-        <option value="">
-          {resources.loading ? "Loading tags..." : "Select a tag"}
-        </option>
-        {value && !selected ? (
-          <option value="__current" disabled>
-            Unknown tag ({shortId(value)})
-          </option>
-        ) : null}
-        {!resources.loading && resources.tags.length === 0 ? (
-          <option value="__empty" disabled>
-            No tags available
-          </option>
-        ) : null}
-        {resources.tags.map((tag) => (
-          <option key={tag.id} value={tag.id}>
-            {tag.name}
-          </option>
-        ))}
-      </select>
-      <ResourceLoadNote resources={resources} />
-    </>
-  )
-}
-
-function MemberSelect({
-  value,
-  resources,
-  onChange,
-}: {
-  value: string
-  resources: BuilderResources
-  onChange: (agentId: string) => void
-}) {
-  const assignableMembers = resources.members.filter((member) =>
-    hasMinRole(member.role, "agent"),
-  )
-  const selected = assignableMembers.find((member) => member.user_id === value)
-  const selectValue = value && !selected ? "__current" : value
-
-  return (
-    <>
-      <select
-        value={selectValue}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={resources.loading && assignableMembers.length === 0}
-        className={SELECT_CLASS}
-      >
-        <option value="">
-          {resources.loading ? "Loading agents..." : "Select an agent"}
-        </option>
-        {value && !selected ? (
-          <option value="__current" disabled>
-            Unknown agent ({shortId(value)})
-          </option>
-        ) : null}
-        {!resources.loading && assignableMembers.length === 0 ? (
-          <option value="__empty" disabled>
-            No agents available
-          </option>
-        ) : null}
-        {assignableMembers.map((member) => (
-          <option key={member.user_id} value={member.user_id}>
-            {memberLabel(member)} ({member.role})
-          </option>
-        ))}
-      </select>
-      <ResourceLoadNote resources={resources} />
-    </>
-  )
-}
-
-function TemplateSelect({
-  templateName,
-  language,
-  resources,
-  onChange,
-}: {
-  templateName: string
-  language: string
-  resources: BuilderResources
-  onChange: (template: MessageTemplate | null) => void
-}) {
-  const selected = resources.templates.find(
-    (template) =>
-      template.name === templateName &&
-      templateLanguage(template) === (language || "en_US"),
-  )
-  const selectValue = templateName && !selected ? "__current" : selected?.id ?? ""
-
-  return (
-    <>
-      <select
-        value={selectValue}
-        onChange={(e) => {
-          const template =
-            resources.templates.find((item) => item.id === e.target.value) ?? null
-          onChange(template)
-        }}
-        disabled={resources.loading && resources.templates.length === 0}
-        className={SELECT_CLASS}
-      >
-        <option value="">
-          {resources.loading ? "Loading templates..." : "Select a template"}
-        </option>
-        {templateName && !selected ? (
-          <option value="__current" disabled>
-            Current: {templateName} ({language || "en_US"})
-          </option>
-        ) : null}
-        {!resources.loading && resources.templates.length === 0 ? (
-          <option value="__empty" disabled>
-            No approved templates available
-          </option>
-        ) : null}
-        {resources.templates.map((template) => (
-          <option key={template.id} value={template.id}>
-            {template.name} ({templateLanguage(template)})
-          </option>
-        ))}
-      </select>
-      {selected?.body_text ? (
-        <p className="mt-1 line-clamp-2 text-[11px] text-slate-500">
-          {selected.body_text}
-        </p>
-      ) : null}
-      <ResourceLoadNote resources={resources} />
-    </>
-  )
-}
-
-function ResourceLoadNote({ resources }: { resources: BuilderResources }) {
-  if (!resources.error) return null
-  return <p className="mt-1 text-[11px] text-amber-400">{resources.error}</p>
-}
-
-function memberLabel(member: AccountMember): string {
-  return member.full_name || member.email || "Unnamed member"
-}
-
-function templateLanguage(template: MessageTemplate): string {
-  return template.language || "en_US"
-}
-
-function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}...` : id
 }
 
 function FieldBlock({
