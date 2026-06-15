@@ -22,10 +22,16 @@ import {
   Loader2,
 } from "lucide-react";
 import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
+import {
+  MediaUploadField,
+  type UploadedMediaAsset,
+} from "./media-upload-field";
+import type { WhatsAppMediaKind } from "@/lib/whatsapp/media-types";
 
 export interface TemplateSendValues {
   body: string[];
   headerText?: string;
+  headerMediaAssetId?: string;
   buttonParams?: Record<number, string>;
 }
 
@@ -58,6 +64,7 @@ function collectVariableSlots(template: MessageTemplate): {
   bodyVars: number[];
   headerVarCount: number;
   urlButtonSlots: UrlButtonSlot[];
+  headerMediaKind: WhatsAppMediaKind | null;
 } {
   const bodyVars = extractVariableIndices(template.body_text);
   const headerVarCount =
@@ -70,7 +77,13 @@ function collectVariableSlots(template: MessageTemplate): {
       urlButtonSlots.push({ index: i, text: b.text, url: b.url });
     }
   });
-  return { bodyVars, headerVarCount, urlButtonSlots };
+  const headerMediaKind =
+    template.header_type === "image" ||
+    template.header_type === "video" ||
+    template.header_type === "document"
+      ? template.header_type
+      : null;
+  return { bodyVars, headerVarCount, urlButtonSlots, headerMediaKind };
 }
 
 export function TemplatePicker({
@@ -83,6 +96,7 @@ export function TemplatePicker({
   const [selected, setSelected] = useState<MessageTemplate | null>(null);
   const [params, setParams] = useState<string[]>([]);
   const [headerText, setHeaderText] = useState<string>("");
+  const [headerMedia, setHeaderMedia] = useState<UploadedMediaAsset | null>(null);
   const [buttonParams, setButtonParams] = useState<Record<number, string>>({});
 
   useEffect(() => {
@@ -130,6 +144,7 @@ export function TemplatePicker({
     setSelected(null);
     setParams([]);
     setHeaderText("");
+    setHeaderMedia(null);
     setButtonParams({});
   }
 
@@ -143,7 +158,11 @@ export function TemplatePicker({
     const noInputsNeeded =
       slots.bodyVars.length === 0 &&
       slots.headerVarCount === 0 &&
-      slots.urlButtonSlots.length === 0;
+      slots.urlButtonSlots.length === 0 &&
+      (slots.headerMediaKind === null ||
+        Boolean(
+          template.default_header_media_asset_id || template.header_media_url,
+        ));
     if (noInputsNeeded) {
       onSelect(template, { body: [] });
       handleOpenChange(false);
@@ -152,6 +171,7 @@ export function TemplatePicker({
     setSelected(template);
     setParams(new Array(slots.bodyVars.length).fill(""));
     setHeaderText("");
+    setHeaderMedia(null);
     setButtonParams({});
   }
 
@@ -159,6 +179,7 @@ export function TemplatePicker({
     if (!selected) return;
     const values: TemplateSendValues = { body: params };
     if (headerText.trim()) values.headerText = headerText.trim();
+    if (headerMedia) values.headerMediaAssetId = headerMedia.id;
     if (Object.keys(buttonParams).length > 0) {
       values.buttonParams = Object.fromEntries(
         Object.entries(buttonParams).map(([k, v]) => [Number(k), v.trim()]),
@@ -177,6 +198,11 @@ export function TemplatePicker({
     !!slots &&
     slots.bodyVars.every((_, i) => (params[i] ?? "").trim().length > 0) &&
     (slots.headerVarCount === 0 || headerText.trim().length > 0) &&
+    (slots.headerMediaKind === null ||
+      headerMedia !== null ||
+      Boolean(
+        selected.default_header_media_asset_id || selected.header_media_url,
+      )) &&
     slots.urlButtonSlots.every(
       (s) => (buttonParams[s.index] ?? "").trim().length > 0,
     );
@@ -267,6 +293,25 @@ export function TemplatePicker({
                   placeholder="Value for the header variable"
                   className="border-slate-700 bg-slate-800 text-white placeholder:text-slate-500"
                 />
+              </div>
+            )}
+            {slots?.headerMediaKind && (
+              <div className="space-y-1">
+                <Label className="text-xs text-slate-300">
+                  {`${slots.headerMediaKind[0].toUpperCase()}${slots.headerMediaKind.slice(1)} header`}
+                </Label>
+                <MediaUploadField
+                  kinds={[slots.headerMediaKind]}
+                  value={headerMedia}
+                  onChange={setHeaderMedia}
+                />
+                <p className="text-[10px] text-slate-500">
+                  {selected.default_header_media_asset_id
+                    ? 'The saved default is selected. Upload here only to override it for this message.'
+                    : selected.header_media_url
+                      ? 'The saved public media URL is selected. Upload here only to override it for this message.'
+                    : 'No default is configured. Upload media for this message or set a default in Settings.'}
+                </p>
               </div>
             )}
             {slots?.bodyVars.map((v, i) => (

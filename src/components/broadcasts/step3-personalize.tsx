@@ -13,6 +13,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ArrowLeft, ArrowRight, Eye, Loader2 } from 'lucide-react';
+import {
+  MediaUploadField,
+  type UploadedMediaAsset,
+} from '@/components/inbox/media-upload-field';
 
 type VariableType = 'static' | 'field' | 'custom_field';
 
@@ -25,6 +29,8 @@ interface Step3Props {
   template: MessageTemplate;
   variables: Record<string, VariableMapping>;
   onUpdate: (variables: Record<string, VariableMapping>) => void;
+  headerMedia: UploadedMediaAsset | null;
+  onHeaderMediaChange: (asset: UploadedMediaAsset | null) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -52,6 +58,8 @@ export function Step3Personalize({
   template,
   variables,
   onUpdate,
+  headerMedia,
+  onHeaderMediaChange,
   onNext,
   onBack,
 }: Step3Props) {
@@ -183,6 +191,12 @@ export function Step3Personalize({
   const previewLabel = firstContact
     ? firstContact.name || firstContact.phone
     : 'sample data';
+  const headerMediaKind =
+    template.header_type === 'image' ||
+    template.header_type === 'video' ||
+    template.header_type === 'document'
+      ? template.header_type
+      : null;
 
   return (
     <div className="space-y-6">
@@ -193,6 +207,26 @@ export function Step3Personalize({
           values.
         </p>
       </div>
+
+      {headerMediaKind && (
+        <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+          <p className="text-sm font-medium text-white">
+            {`${headerMediaKind[0].toUpperCase()}${headerMediaKind.slice(1)} header`}
+          </p>
+          <MediaUploadField
+            kinds={[headerMediaKind]}
+            value={headerMedia}
+            onChange={onHeaderMediaChange}
+          />
+          <p className="text-xs text-slate-500">
+            {template.default_header_media_asset_id
+              ? 'The saved template default will be used. Upload here only to override it for this broadcast.'
+              : template.header_media_url
+                ? 'The saved public media URL will be used. Upload here only to override it for this broadcast.'
+              : 'No default is configured. Upload media to reuse for every recipient.'}
+          </p>
+        </div>
+      )}
 
       {placeholders.length === 0 ? (
         <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-6 text-center">
@@ -351,7 +385,13 @@ export function Step3Personalize({
         </Button>
         <Button
           onClick={onNext}
-          disabled={unmappedKeys.length > 0}
+          disabled={
+            unmappedKeys.length > 0 ||
+            (headerMediaKind !== null &&
+              !headerMedia &&
+              !template.default_header_media_asset_id &&
+              !template.header_media_url)
+          }
           className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           Next

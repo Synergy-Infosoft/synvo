@@ -1,12 +1,28 @@
 "use client";
 
 import { useState, useRef, useCallback, KeyboardEvent } from "react";
-import { Send, LayoutTemplate } from "lucide-react";
+import {
+  FileAudio,
+  FileText,
+  Image as ImageIcon,
+  LayoutTemplate,
+  MapPin,
+  Paperclip,
+  Send,
+  Video,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { GatedButton } from "@/components/ui/gated-button";
 import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
 import { ReplyQuote } from "./reply-quote";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { AttachmentMode } from "./attachment-dialog";
 
 interface ReplyDraft {
   /** Internal UUID of the message being replied to — sent back through onSend. */
@@ -16,19 +32,19 @@ interface ReplyDraft {
 }
 
 interface MessageComposerProps {
-  conversationId: string;
   sessionExpired: boolean;
   onSend: (text: string, replyToId?: string) => void;
   onOpenTemplates: () => void;
+  onOpenAttachment: (mode: AttachmentMode) => void;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
 }
 
 export function MessageComposer({
-  conversationId,
   sessionExpired,
   onSend,
   onOpenTemplates,
+  onOpenAttachment,
   replyTo,
   onClearReply,
 }: MessageComposerProps) {
@@ -123,6 +139,40 @@ export function MessageComposer({
         >
           <LayoutTemplate className="h-4 w-4" />
         </GatedButton>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            disabled={sessionExpired || readOnly}
+            title={sessionExpired ? "Session expired - use a template" : "Attach media"}
+            className={cn(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-white",
+              (sessionExpired || readOnly) && "cursor-not-allowed opacity-40",
+            )}
+          >
+            <Paperclip className="h-4 w-4" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            className="w-44 border-slate-700 bg-slate-800"
+          >
+            <DropdownMenuItem onClick={() => onOpenAttachment("image")}>
+              <ImageIcon /> Image
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onOpenAttachment("video")}>
+              <Video /> Video
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onOpenAttachment("document")}>
+              <FileText /> Document
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onOpenAttachment("audio")}>
+              <FileAudio /> Audio
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onOpenAttachment("location")}>
+              <MapPin /> Location
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <textarea
           ref={textareaRef}

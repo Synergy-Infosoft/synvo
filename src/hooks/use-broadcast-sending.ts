@@ -39,6 +39,7 @@ interface BroadcastPayload {
   template: MessageTemplate;
   audience: AudienceConfig;
   variables: Record<string, VariableMapping>;
+  headerMediaAssetId?: string;
 }
 
 interface UseBroadcastSendingReturn {
@@ -460,6 +461,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
               recipients: apiRecipients,
               template_name: payload.template.name,
               template_language: payload.template.language ?? 'en_US',
+              header_media_asset_id: payload.headerMediaAssetId,
             }),
           });
 

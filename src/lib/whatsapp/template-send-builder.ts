@@ -12,7 +12,7 @@
  * only need to supply values for the variable-bearing fields:
  *
  *   - Static IMAGE/VIDEO/DOCUMENT headers ride along automatically
- *     using the template's `header_media_url` (or `header_handle`).
+ *     when the template stores a reusable public `header_media_url`.
  *     Meta requires the media component on every send even though
  *     the URL hasn't changed since approval.
  *   - TEXT headers with `{{1}}` need `headerText` from the caller.
@@ -98,7 +98,9 @@ function buildHeaderComponent(
   // every send. Prefer the caller's explicit override; fall back to
   // the template's stored sample.
   const link = params.headerMediaUrl ?? template.header_media_url;
-  const id = params.headerMediaId ?? template.header_handle;
+  // `header_handle` is only for template review. It is not a reusable
+  // send-time media id and Meta rejects it in image/video/document.id.
+  const id = params.headerMediaId;
   if (!link && !id) {
     throw new Error(
       `${headerType} header requires a media link or id at send time — set header_media_url on the template or pass headerMediaUrl/headerMediaId.`,

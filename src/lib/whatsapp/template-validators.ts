@@ -42,6 +42,7 @@ export interface TemplatePayload {
   header_content?: string;
   header_media_url?: string;
   header_handle?: string;
+  default_header_media_asset_id?: string;
   body_text: string;
   footer_text?: string;
   buttons?: TemplateButton[];

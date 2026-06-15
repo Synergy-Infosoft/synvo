@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
-import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { getMediaUrl } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
@@ -548,8 +548,14 @@ async function processMessage(
   }
 
   // Parse message content based on type
-  const { contentText, mediaUrl, mediaType, interactiveReplyId } =
-    await parseMessageContent(message, accessToken)
+  const {
+    contentText,
+    mediaUrl,
+    mediaType,
+    mediaFilename,
+    location,
+    interactiveReplyId,
+  } = await parseMessageContent(message, accessToken)
 
   // Resolve swipe-reply context if present. A missing parent is fine —
   // we just store NULL and the UI renders the message without a quote.
@@ -574,8 +580,6 @@ async function processMessage(
   // `mediaType` is intentionally unused — the schema has no media_type
   // column; the MIME type is only used to construct the proxy URL during
   // parseMessageContent. Silence the unused-var warning:
-  void mediaType
-
   // The messages.content_type CHECK constraint (widened in migration 010
   // to add 'interactive' for button/list taps) allows:
   //   text, image, document, audio, video, location, template, interactive
@@ -611,6 +615,12 @@ async function processMessage(
     content_type: contentType,
     content_text: contentText,
     media_url: mediaUrl,
+    media_filename: mediaFilename,
+    media_mime_type: mediaType,
+    location_latitude: location?.latitude ?? null,
+    location_longitude: location?.longitude ?? null,
+    location_name: location?.name ?? null,
+    location_address: location?.address ?? null,
     message_id: message.id,
     status: 'delivered',
     created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
@@ -732,6 +742,8 @@ async function parseMessageContent(
   contentText: string | null
   mediaUrl: string | null
   mediaType: string | null
+  mediaFilename: string | null
+  location: WhatsAppMessage['location'] | null
   /**
    * For interactive button / list replies: the stable id of the tapped
    * option (whatever we put on the button when sending). Used by the
@@ -766,6 +778,8 @@ async function parseMessageContent(
     contentText: null,
     mediaUrl: null,
     mediaType: null,
+    mediaFilename: null,
+    location: null,
     interactiveReplyId: null,
   }
 
@@ -803,6 +817,7 @@ async function parseMessageContent(
             message.document.caption || message.document.filename || null,
           mediaUrl: await verifyAndBuildUrl(message.document.id),
           mediaType: message.document.mime_type,
+          mediaFilename: message.document.filename || null,
         }
       }
       return empty
@@ -836,7 +851,7 @@ async function parseMessageContent(
         const locationText = [loc.name, loc.address, `${loc.latitude},${loc.longitude}`]
           .filter(Boolean)
           .join(' - ')
-        return { ...empty, contentText: locationText }
+        return { ...empty, contentText: locationText, location: loc }
       }
       return empty
 

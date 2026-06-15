@@ -12,6 +12,7 @@ import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
 import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
 import { Check } from 'lucide-react';
+import type { UploadedMediaAsset } from '@/components/inbox/media-upload-field';
 
 const steps = [
   { label: 'Template', key: 'template' },
@@ -42,6 +43,7 @@ export default function NewBroadcastPage() {
     Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>
   >({});
   const [name, setName] = useState('');
+  const [headerMedia, setHeaderMedia] = useState<UploadedMediaAsset | null>(null);
 
   async function handleSend() {
     if (!template) return;
@@ -58,6 +60,7 @@ export default function NewBroadcastPage() {
           excludeTagIds: audience.excludeTagIds,
         },
         variables,
+        headerMediaAssetId: headerMedia?.id,
       });
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
@@ -187,7 +190,10 @@ export default function NewBroadcastPage() {
           {currentStep === 0 && (
             <Step1ChooseTemplate
               selectedTemplate={template}
-              onSelect={setTemplate}
+              onSelect={(next) => {
+                setTemplate(next);
+                setHeaderMedia(null);
+              }}
               onNext={() => setCurrentStep(1)}
               onBack={() => router.push('/broadcasts')}
             />
@@ -205,6 +211,8 @@ export default function NewBroadcastPage() {
               template={template}
               variables={variables}
               onUpdate={setVariables}
+              headerMedia={headerMedia}
+              onHeaderMediaChange={setHeaderMedia}
               onNext={() => setCurrentStep(3)}
               onBack={() => setCurrentStep(1)}
             />

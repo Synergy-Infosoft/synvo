@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   INTERACTIVE_LIMITS,
+  sendLocationMessage,
+  sendMediaMessage,
   sendInteractiveButtons,
   sendInteractiveList,
+  uploadTemplateSampleMedia,
+  uploadWhatsAppMedia,
 } from "./meta-api";
 
 // All assertions in this file run BEFORE the network call. We stub fetch
@@ -20,6 +24,98 @@ const BASE_ARGS = {
   to: "1234567890",
   bodyText: "Body text",
 } as const;
+
+describe("rich media payloads", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends an uploaded media id", async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.MEDIA" }] }));
+    }));
+    await sendMediaMessage({
+      phoneNumberId: "phone",
+      accessToken: "token",
+      to: "123",
+      kind: "image",
+      id: "real-meta-media-id",
+      caption: "Campaign header",
+    });
+    expect(body).toMatchObject({
+      type: "image",
+      image: { id: "real-meta-media-id", caption: "Campaign header" },
+    });
+  });
+
+  it("sends structured location data", async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.LOC" }] }));
+    }));
+    await sendLocationMessage({
+      phoneNumberId: "phone",
+      accessToken: "token",
+      to: "123",
+      latitude: 28.6139,
+      longitude: 77.209,
+      name: "Synergy Infosoft",
+    });
+    expect(body).toMatchObject({
+      type: "location",
+      location: { latitude: 28.6139, longitude: 77.209, name: "Synergy Infosoft" },
+    });
+  });
+
+  it("uploads multipart media", async () => {
+    let url = "";
+    let form: unknown = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit) => {
+      url = input;
+      form = init.body;
+      return new Response(JSON.stringify({ id: "uploaded-id" }));
+    }));
+    const result = await uploadWhatsAppMedia({
+      phoneNumberId: "phone",
+      accessToken: "token",
+      file: new Blob(["hello"], { type: "text/plain" }),
+      filename: "hello.txt",
+    });
+    expect(result).toEqual({ mediaId: "uploaded-id" });
+    expect(url).toContain("/phone/media");
+    expect(form).toBeInstanceOf(FormData);
+    const submitted = form as FormData;
+    expect(submitted.get("messaging_product")).toBe("whatsapp");
+    expect(submitted.get("file")).toBeInstanceOf(Blob);
+  });
+
+  it("uploads a template approval sample through the resumable upload API", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return calls.length === 1
+        ? new Response(JSON.stringify({ id: "upload:session-id" }))
+        : new Response(JSON.stringify({ h: "2:approval-handle" }));
+    }));
+    const result = await uploadTemplateSampleMedia({
+      appId: "app-id",
+      accessToken: "token",
+      file: new Blob(["image"], { type: "image/png" }),
+      filename: "header.png",
+    });
+    expect(result).toEqual({ headerHandle: "2:approval-handle" });
+    expect(calls[0].url).toContain("/app-id/uploads?");
+    expect(calls[0].url).toContain("file_type=image%2Fpng");
+    expect(calls[1].url).toContain("/upload:session-id");
+    expect(new Headers(calls[1].init.headers).get("file_offset")).toBe("0");
+    expect(new Headers(calls[1].init.headers).get("Authorization")).toBe(
+      "OAuth token",
+    );
+  });
+});
 
 describe("sendInteractiveButtons — validation", () => {
   beforeEach(() => {

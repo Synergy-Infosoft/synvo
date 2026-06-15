@@ -1,5 +1,7 @@
 import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { ensureMetaMediaId, type StoredWhatsAppMediaAsset } from '@/lib/whatsapp/media-assets'
+import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard'
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -41,6 +43,7 @@ interface SendTemplateArgs {
   templateName: string
   language?: string
   params?: string[]
+  headerMediaAssetId?: string
 }
 
 export async function engineSendText(args: SendTextArgs): Promise<{ whatsapp_message_id: string }> {
@@ -94,6 +97,49 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
 
   const accessToken = decrypt(config.access_token)
 
+  let templateRow = null
+  let headerMediaAsset: StoredWhatsAppMediaAsset | null = null
+  let headerMediaId: string | undefined
+  if (input.kind === 'template') {
+    const { data } = await db
+      .from('message_templates')
+      .select('*')
+      .eq('account_id', input.accountId)
+      .eq('name', input.templateName)
+      .eq('language', input.language || 'en_US')
+      .maybeSingle()
+    if (data && !isMessageTemplate(data)) throw new Error('template row is malformed')
+    templateRow = data ?? null
+
+    const resolvedHeaderMediaAssetId =
+      input.headerMediaAssetId || templateRow?.default_header_media_asset_id
+    if (resolvedHeaderMediaAssetId) {
+      const { data: asset, error } = await db
+        .from('whatsapp_media_assets')
+        .select(
+          'id, account_id, media_type, mime_type, original_filename, storage_path, meta_media_id, meta_uploaded_at',
+        )
+        .eq('account_id', input.accountId)
+        .eq('id', resolvedHeaderMediaAssetId)
+        .maybeSingle()
+      if (error || !asset) throw new Error('template header media not found')
+      headerMediaAsset = asset as StoredWhatsAppMediaAsset
+      if (
+        templateRow?.header_type &&
+        headerMediaAsset.media_type !== templateRow.header_type
+      ) {
+        throw new Error(
+          `template requires ${templateRow.header_type} media, got ${headerMediaAsset.media_type}`,
+        )
+      }
+      headerMediaId = await ensureMetaMediaId({
+        asset: headerMediaAsset,
+        phoneNumberId: config.phone_number_id,
+        accessToken,
+      })
+    }
+  }
+
   const attempt = async (phone: string): Promise<string> => {
     if (input.kind === 'template') {
       const r = await sendTemplateMessage({
@@ -103,6 +149,8 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
         templateName: input.templateName,
         language: input.language,
         params: input.params,
+        template: templateRow ?? undefined,
+        messageParams: { body: input.params, headerMediaId },
       })
       return r.messageId
     }
@@ -153,6 +201,12 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     content_type,
     content_text,
     template_name,
+    media_asset_id: headerMediaAsset?.id ?? null,
+    media_url: headerMediaAsset
+      ? `/api/whatsapp/media-assets/${headerMediaAsset.id}`
+      : null,
+    media_filename: headerMediaAsset?.original_filename ?? null,
+    media_mime_type: headerMediaAsset?.mime_type ?? null,
     message_id: waMessageId,
     status: 'sent',
   })

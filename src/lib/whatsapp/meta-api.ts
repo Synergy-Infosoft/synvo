@@ -259,7 +259,7 @@ export async function sendTextMessage(
   return { messageId: data.messages[0].id }
 }
 
-export type MediaKind = 'image' | 'video' | 'document'
+export type MediaKind = 'image' | 'video' | 'audio' | 'document' | 'sticker'
 
 export interface SendMediaMessageArgs {
   phoneNumberId: string
@@ -267,7 +267,9 @@ export interface SendMediaMessageArgs {
   to: string
   kind: MediaKind
   /** Public URL Meta fetches at send time. */
-  link: string
+  link?: string
+  /** Meta media id returned by POST /{phone_number_id}/media. */
+  id?: string
   /** Optional caption — Meta caps at 1024 chars. Documents + images + videos all accept it. */
   caption?: string
   /** Document-only. Shown in the recipient's chat as the file name. Ignored for image/video. */
@@ -276,7 +278,7 @@ export interface SendMediaMessageArgs {
 }
 
 /**
- * Send an image, video, or document via a public URL.
+ * Send media using either a public URL or a previously uploaded Meta id.
  *
  * Used by the Flows engine's `send_media` node. Mirrors
  * `sendTextMessage` — single fetch, throws on non-2xx, returns Meta's
@@ -285,12 +287,12 @@ export interface SendMediaMessageArgs {
 export async function sendMediaMessage(
   args: SendMediaMessageArgs,
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
-  if (!link) throw new Error('sendMediaMessage requires a link.')
+  const { phoneNumberId, accessToken, to, kind, link, id, caption, filename, contextMessageId } = args
+  if (!link && !id) throw new Error('sendMediaMessage requires a link or id.')
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
-  const media: Record<string, unknown> = { link }
-  if (caption) media.caption = caption
+  const media: Record<string, unknown> = id ? { id } : { link }
+  if (caption && kind !== 'audio' && kind !== 'sticker') media.caption = caption
   if (kind === 'document' && filename) media.filename = filename
 
   const body: Record<string, unknown> = {
@@ -303,6 +305,50 @@ export async function sendMediaMessage(
   if (contextMessageId) body.context = { message_id: contextMessageId }
 
   const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
+export interface SendLocationMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  latitude: number
+  longitude: number
+  name?: string
+  address?: string
+  contextMessageId?: string
+}
+
+export async function sendLocationMessage(
+  args: SendLocationMessageArgs,
+): Promise<MetaSendResult> {
+  const {
+    phoneNumberId, accessToken, to, latitude, longitude,
+    name, address, contextMessageId,
+  } = args
+  const location: Record<string, unknown> = { latitude, longitude }
+  if (name) location.name = name
+  if (address) location.address = address
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'location',
+    location,
+  }
+  if (contextMessageId) body.context = { message_id: contextMessageId }
+  const response = await fetch(`${META_API_BASE}/${phoneNumberId}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -900,6 +946,103 @@ function validateInteractiveHeaderFooter(
 // ============================================================
 // Media
 // ============================================================
+
+export interface UploadWhatsAppMediaArgs {
+  phoneNumberId: string
+  accessToken: string
+  file: Blob
+  filename: string
+}
+
+export async function uploadWhatsAppMedia(
+  args: UploadWhatsAppMediaArgs,
+): Promise<{ mediaId: string }> {
+  const form = new FormData()
+  form.append('messaging_product', 'whatsapp')
+  form.append('file', args.file, args.filename)
+  const response = await fetch(`${META_API_BASE}/${args.phoneNumberId}/media`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${args.accessToken}` },
+    body: form,
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Media upload failed: ${response.status}`)
+  }
+  const data = await response.json()
+  if (!data.id) throw new Error('Meta media upload did not return an id.')
+  return { mediaId: String(data.id) }
+}
+
+export interface UploadTemplateSampleMediaArgs {
+  accessToken: string
+  file: Blob
+  filename: string
+  appId?: string
+}
+
+async function resolveMetaAppId(accessToken: string): Promise<string> {
+  if (process.env.META_APP_ID) return process.env.META_APP_ID
+  const response = await fetch(`${META_API_BASE}/app?fields=id`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Could not resolve Meta app: ${response.status}`)
+  }
+  const data = (await response.json()) as { id?: string }
+  if (!data.id) throw new Error('Meta did not return an app id for this token.')
+  return String(data.id)
+}
+
+/**
+ * Upload the approval sample required when creating or editing a template
+ * with an IMAGE, VIDEO, or DOCUMENT header. The returned handle is only for
+ * template review; send-time messages must use /media ids or public links.
+ */
+export async function uploadTemplateSampleMedia(
+  args: UploadTemplateSampleMediaArgs,
+): Promise<{ headerHandle: string }> {
+  const appId = args.appId ?? (await resolveMetaAppId(args.accessToken))
+  const params = new URLSearchParams({
+    file_name: args.filename,
+    file_length: String(args.file.size),
+    file_type: args.file.type,
+  })
+  const sessionResponse = await fetch(
+    `${META_API_BASE}/${appId}/uploads?${params.toString()}`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${args.accessToken}` },
+    },
+  )
+  if (!sessionResponse.ok) {
+    await throwMetaError(
+      sessionResponse,
+      `Template sample upload session failed: ${sessionResponse.status}`,
+    )
+  }
+  const session = (await sessionResponse.json()) as { id?: string }
+  if (!session.id) {
+    throw new Error('Meta did not return a template sample upload session.')
+  }
+
+  const uploadResponse = await fetch(`${META_API_BASE}/${session.id}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `OAuth ${args.accessToken}`,
+      file_offset: '0',
+    },
+    body: args.file,
+  })
+  if (!uploadResponse.ok) {
+    await throwMetaError(
+      uploadResponse,
+      `Template sample upload failed: ${uploadResponse.status}`,
+    )
+  }
+  const uploaded = (await uploadResponse.json()) as { h?: string }
+  if (!uploaded.h) throw new Error('Meta did not return a template sample handle.')
+  return { headerHandle: String(uploaded.h) }
+}
 
 export interface GetMediaUrlArgs {
   mediaId: string

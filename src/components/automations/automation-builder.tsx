@@ -54,6 +54,10 @@ import type {
 import { normalizeKeywordMatchType } from "@/lib/automations/keyword-list"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
+import {
+  MediaUploadField,
+  type UploadedMediaAsset,
+} from "@/components/inbox/media-upload-field"
 
 // ------------------------------------------------------------
 // Types (builder-local — mirror the flattened rows we POST)
@@ -389,13 +393,47 @@ function AgentSelect({
 function SendTemplateFields({
   templateName,
   language,
+  headerMediaAssetId,
   onChange,
 }: {
   templateName: string
   language: string
-  onChange: (patch: { template_name: string; language: string }) => void
+  headerMediaAssetId: string
+  onChange: (patch: Record<string, unknown>) => void
 }) {
   const { templates } = useResources()
+  const [headerMedia, setHeaderMedia] = useState<UploadedMediaAsset | null>(null)
+  const selectedTemplate = templates.find(
+    (t) => t.name === templateName && (t.language ?? "en_US") === language,
+  )
+  const headerMediaKind =
+    selectedTemplate?.header_type === "image" ||
+    selectedTemplate?.header_type === "video" ||
+    selectedTemplate?.header_type === "document"
+      ? selectedTemplate.header_type
+      : null
+
+  useEffect(() => {
+    if (!headerMediaAssetId) return
+    let cancelled = false
+    const supabase = createClient()
+    void supabase
+      .from("whatsapp_media_assets")
+      .select("id, media_type, mime_type, original_filename, size_bytes")
+      .eq("id", headerMediaAssetId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled && data) {
+          setHeaderMedia({
+            ...data,
+            media_url: `/api/whatsapp/media-assets/${data.id}`,
+          } as UploadedMediaAsset)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [headerMediaAssetId])
 
   if (templates.length === 0) {
     return (
@@ -404,7 +442,11 @@ function SendTemplateFields({
           <Input
             value={templateName}
             onChange={(e) =>
-              onChange({ template_name: e.target.value, language })
+              onChange({
+                template_name: e.target.value,
+                language,
+                header_media_asset_id: "",
+              })
             }
             className="bg-slate-800 text-white"
           />
@@ -413,7 +455,11 @@ function SendTemplateFields({
           <Input
             value={language}
             onChange={(e) =>
-              onChange({ template_name: templateName, language: e.target.value })
+              onChange({
+                template_name: templateName,
+                language: e.target.value,
+                header_media_asset_id: "",
+              })
             }
             className="bg-slate-800 text-white"
           />
@@ -431,12 +477,17 @@ function SendTemplateFields({
   )
 
   return (
-    <FieldBlock label="Template">
+    <>
+      <FieldBlock label="Template">
       <select
         value={current}
         onChange={(e) => {
           const [name, lang] = e.target.value.split("::")
-          onChange({ template_name: name ?? "", language: lang ?? "" })
+          onChange({
+            template_name: name ?? "",
+            language: lang ?? "",
+            header_media_asset_id: "",
+          })
         }}
         className={SELECT_CLASS}
       >
@@ -455,7 +506,27 @@ function SendTemplateFields({
           </option>
         )}
       </select>
-    </FieldBlock>
+      </FieldBlock>
+      {headerMediaKind && (
+        <FieldBlock label={`${headerMediaKind} header`}>
+          <MediaUploadField
+            kinds={[headerMediaKind]}
+            value={headerMediaAssetId ? headerMedia : null}
+            onChange={(asset) => {
+              setHeaderMedia(asset)
+              onChange({ header_media_asset_id: asset?.id ?? "" })
+            }}
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            {selectedTemplate?.default_header_media_asset_id
+              ? "The saved template default is used unless you upload an override."
+              : selectedTemplate?.header_media_url
+                ? "The saved public media URL is used unless you upload an override."
+              : "No template default is configured. Upload media before activating this automation."}
+          </p>
+        </FieldBlock>
+      )}
+    </>
   )
 }
 
@@ -1058,6 +1129,7 @@ function StepEditor({
         <SendTemplateFields
           templateName={(cfg.template_name as string) ?? ""}
           language={(cfg.language as string) ?? ""}
+          headerMediaAssetId={(cfg.header_media_asset_id as string) ?? ""}
           onChange={(patch) => set(patch)}
         />
       )

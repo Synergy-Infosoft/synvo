@@ -157,13 +157,22 @@ export function ProfileForm() {
       // Email change goes through Supabase Auth, which emails a
       // confirmation to both the old and new addresses. We don't
       // touch profiles.email — Supabase will push the change there
-      // after the user clicks the link (handled by the handle_new_user
-      // trigger pattern in production deployments).
+      // after confirmation through the sync_profile_email trigger.
       let emailSent = false;
       if (trimmedEmail.toLowerCase() !== profile.email.toLowerCase()) {
-        const { error: emailError } = await supabase.auth.updateUser({
-          email: trimmedEmail,
-        });
+        const canonicalSiteUrl =
+          process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, '') || null;
+        const currentOrigin = window.location.origin;
+        const currentHost = window.location.hostname;
+        const siteUrl =
+          (currentHost === 'localhost' || currentHost === '127.0.0.1') &&
+          canonicalSiteUrl
+            ? canonicalSiteUrl
+            : currentOrigin;
+        const { error: emailError } = await supabase.auth.updateUser(
+          { email: trimmedEmail },
+          { emailRedirectTo: `${siteUrl}/settings?tab=profile` },
+        );
         if (emailError) {
           // Partial success: name/avatar saved but email didn't.
           toast.success('Profile saved');

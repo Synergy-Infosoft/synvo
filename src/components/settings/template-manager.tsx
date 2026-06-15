@@ -45,6 +45,10 @@ import {
   extractVariableIndices,
   TEMPLATE_LIMITS,
 } from '@/lib/whatsapp/template-validators';
+import {
+  MediaUploadField,
+  type UploadedMediaAsset,
+} from '@/components/inbox/media-upload-field';
 
 const CATEGORIES = ['Marketing', 'Utility', 'Authentication'] as const;
 type HeaderFormat = 'none' | 'text' | 'image' | 'video' | 'document';
@@ -63,6 +67,8 @@ interface TemplateFormData {
   header_format: HeaderFormat;
   header_content: string;
   header_media_url: string;
+  header_handle: string;
+  default_header_media_asset_id: string;
   header_sample: string;
   body_text: string;
   body_samples: string[];
@@ -77,6 +83,8 @@ const emptyForm: TemplateFormData = {
   header_format: 'none',
   header_content: '',
   header_media_url: '',
+  header_handle: '',
+  default_header_media_asset_id: '',
   header_sample: '',
   body_text: '',
   body_samples: [],
@@ -127,6 +135,13 @@ export function TemplateManager() {
   const [submitting, setSubmitting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [form, setForm] = useState<TemplateFormData>(emptyForm);
+  const [headerMedia, setHeaderMedia] = useState<UploadedMediaAsset | null>(null);
+  const [defaultMediaTemplate, setDefaultMediaTemplate] =
+    useState<MessageTemplate | null>(null);
+  const [defaultMedia, setDefaultMedia] = useState<UploadedMediaAsset | null>(
+    null,
+  );
+  const [savingDefaultMedia, setSavingDefaultMedia] = useState(false);
   // Non-null when the dialog is editing an existing row — switches the
   // submit handler from POST /submit to PATCH /[id] and changes the
   // dialog title + CTA. Set to the template id to pre-fill from a row.
@@ -192,6 +207,23 @@ export function TemplateManager() {
     }
   }
 
+  async function fetchMediaAsset(
+    assetId?: string | null,
+  ): Promise<UploadedMediaAsset | null> {
+    if (!assetId) return null;
+    const { data } = await supabase
+      .from('whatsapp_media_assets')
+      .select('id, media_type, mime_type, original_filename, size_bytes')
+      .eq('id', assetId)
+      .maybeSingle();
+    return data
+      ? ({
+          ...data,
+          media_url: `/api/whatsapp/media-assets/${data.id}`,
+        } as UploadedMediaAsset)
+      : null;
+  }
+
   function buildSubmitPayload() {
     const sample_values: TemplateSampleValues = {};
     if (form.body_samples.some((v) => v.trim())) {
@@ -212,6 +244,9 @@ export function TemplateManager() {
         form.header_format !== 'none' && form.header_format !== 'text'
           ? form.header_media_url.trim() || undefined
           : undefined,
+      header_handle: headerMedia?.header_handle || form.header_handle || undefined,
+      default_header_media_asset_id:
+        headerMedia?.id || form.default_header_media_asset_id || undefined,
       body_text: form.body_text.trim(),
       footer_text: form.footer_text.trim() || undefined,
       buttons: form.buttons.length > 0 ? form.buttons : undefined,
@@ -221,6 +256,7 @@ export function TemplateManager() {
   }
 
   function openEdit(template: MessageTemplate) {
+    setHeaderMedia(null);
     setEditingId(template.id);
     setForm({
       name: template.name,
@@ -229,19 +265,63 @@ export function TemplateManager() {
       header_format: (template.header_type ?? 'none') as HeaderFormat,
       header_content: template.header_content ?? '',
       header_media_url: template.header_media_url ?? '',
+      header_handle: template.header_handle ?? '',
+      default_header_media_asset_id:
+        template.default_header_media_asset_id ?? '',
       header_sample: template.sample_values?.header?.[0] ?? '',
       body_text: template.body_text,
       body_samples: template.sample_values?.body ?? [],
       footer_text: template.footer_text ?? '',
       buttons: template.buttons ?? [],
     });
+    void fetchMediaAsset(template.default_header_media_asset_id).then(
+      setHeaderMedia,
+    );
     setDialogOpen(true);
   }
 
   function openCreate() {
     setEditingId(null);
     setForm(emptyForm);
+    setHeaderMedia(null);
     setDialogOpen(true);
+  }
+
+  async function openDefaultMedia(template: MessageTemplate) {
+    setDefaultMedia(null);
+    setDefaultMediaTemplate(template);
+    setDefaultMedia(
+      await fetchMediaAsset(template.default_header_media_asset_id),
+    );
+  }
+
+  async function saveDefaultMedia() {
+    if (!defaultMediaTemplate) return;
+    setSavingDefaultMedia(true);
+    try {
+      const res = await fetch(
+        `/api/whatsapp/templates/${defaultMediaTemplate.id}/default-media`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            default_header_media_asset_id: defaultMedia?.id ?? null,
+          }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not save default media.');
+      if (user) await fetchTemplates(user.id);
+      setDefaultMediaTemplate(null);
+      setDefaultMedia(null);
+      toast.success('Default template media updated.');
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Could not save default media.',
+      );
+    } finally {
+      setSavingDefaultMedia(false);
+    }
   }
 
   async function handleSubmit() {
@@ -279,6 +359,7 @@ export function TemplateManager() {
       );
       setDialogOpen(false);
       setForm(emptyForm);
+      setHeaderMedia(null);
       setEditingId(null);
     } catch (err) {
       console.error('Submit error:', err);
@@ -442,8 +523,13 @@ export function TemplateManager() {
     );
   }
 
-  const headerNeedsMedia =
-    form.header_format !== 'none' && form.header_format !== 'text';
+  const headerMediaKind =
+    form.header_format === 'image' ||
+    form.header_format === 'video' ||
+    form.header_format === 'document'
+      ? form.header_format
+      : null;
+  const headerNeedsMedia = headerMediaKind !== null;
 
   return (
     <div className="space-y-4 mt-4">
@@ -543,8 +629,26 @@ export function TemplateManager() {
                         </span>
                       </div>
                     )}
+                    {template.header_type && template.header_type !== 'text' && (
+                      <p className="text-xs text-slate-500">
+                        {template.default_header_media_asset_id
+                          ? 'Default send media configured'
+                          : 'No default send media'}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0 ml-2">
+                    {template.header_type && template.header_type !== 'text' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void openDefaultMedia(template)}
+                        title="Set the media automatically used whenever this template is sent."
+                        className="text-slate-300 hover:text-primary hover:bg-primary/10 h-8 px-2"
+                      >
+                        Default media
+                      </Button>
+                    )}
                     {statusKey === 'APPROVED' && (
                       <Button
                         variant="ghost"
@@ -609,6 +713,7 @@ export function TemplateManager() {
           if (!open) {
             setEditingId(null);
             setForm(emptyForm);
+            setHeaderMedia(null);
           }
         }}
       >
@@ -716,18 +821,16 @@ export function TemplateManager() {
               <Label className="text-slate-300">Header</Label>
               <Select
                 value={form.header_format}
-                onValueChange={(val) =>
-                  // Preserve header_content, header_media_url, and
-                  // header_sample across format switches. The submit
-                  // payload builder only reads the field that matches
-                  // the active format, so an orphan value on a hidden
-                  // field is harmless — and keeping it lets the user
-                  // switch formats to compare without losing typing.
+                onValueChange={(val) => {
+                  setHeaderMedia(null);
                   setForm({
                     ...form,
                     header_format: (val || 'none') as HeaderFormat,
-                  })
-                }
+                    header_media_url: '',
+                    header_handle: '',
+                    default_header_media_asset_id: '',
+                  });
+                }}
               >
                 <SelectTrigger className="w-full bg-slate-800 border-slate-700 text-white">
                   <SelectValue />
@@ -777,6 +880,19 @@ export function TemplateManager() {
 
               {headerNeedsMedia && (
                 <div className="space-y-2 mt-2">
+                  <MediaUploadField
+                    kinds={[headerMediaKind]}
+                    value={headerMedia}
+                    onChange={setHeaderMedia}
+                    purpose="template_sample"
+                  />
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Upload once. The CRM sends this file to Meta for approval
+                    and keeps it as the default media used after approval.
+                  </p>
+                  <p className="text-[11px] font-medium text-slate-400">
+                    Or use a public approval-sample URL
+                  </p>
                   <Input
                     placeholder={`https://… (public link to a sample ${form.header_format})`}
                     value={form.header_media_url}
@@ -786,15 +902,14 @@ export function TemplateManager() {
                     className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
                   />
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Must be publicly accessible HTTPS. Meta fetches it once
-                    during review, so the file needs to stay live for ~24 hrs.
+                    Optional fallback. Meta fetches the URL during review.
                     {form.header_format === 'image' &&
                       ' Recommended: JPEG or PNG, ≥800×418 px, ≤5 MB.'}
                     {form.header_format === 'video' &&
                       ' Recommended: MP4 / 3GPP, ≤16 MB, ≤60 seconds.'}
                     {form.header_format === 'document' &&
                       ' Recommended: PDF, ≤100 MB.'}
-                    {' '}Direct file upload is coming in a follow-up.
+                    {' '}It will not become the default sending media.
                   </p>
                 </div>
               )}
@@ -1016,6 +1131,53 @@ export function TemplateManager() {
               ) : (
                 'Submit for Approval'
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={defaultMediaTemplate !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDefaultMediaTemplate(null);
+            setDefaultMedia(null);
+          }
+        }}
+      >
+        <DialogContent className="bg-slate-900 border-slate-700 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white">Default template media</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              This file is automatically used whenever{' '}
+              <strong>{defaultMediaTemplate?.name}</strong> is sent. Changing it
+              does not resubmit the template for Meta review.
+            </DialogDescription>
+          </DialogHeader>
+          {defaultMediaTemplate?.header_type &&
+            defaultMediaTemplate.header_type !== 'text' && (
+              <MediaUploadField
+                kinds={[defaultMediaTemplate.header_type]}
+                value={defaultMedia}
+                onChange={setDefaultMedia}
+                disabled={savingDefaultMedia}
+              />
+            )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDefaultMediaTemplate(null)}
+              disabled={savingDefaultMedia}
+              className="border-slate-700 text-slate-300 hover:bg-slate-800"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void saveDefaultMedia()}
+              disabled={savingDefaultMedia}
+            >
+              {savingDefaultMedia && <Loader2 className="size-4 animate-spin" />}
+              Save default
             </Button>
           </DialogFooter>
         </DialogContent>

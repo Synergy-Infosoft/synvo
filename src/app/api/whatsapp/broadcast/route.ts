@@ -15,6 +15,10 @@ import {
   rateLimitResponse,
   RATE_LIMITS,
 } from '@/lib/rate-limit'
+import {
+  ensureMetaMediaId,
+  type StoredWhatsAppMediaAsset,
+} from '@/lib/whatsapp/media-assets'
 
 interface BroadcastResult {
   phone: string
@@ -103,6 +107,7 @@ export async function POST(request: Request) {
       template_name,
       template_language,
       template_params,
+      header_media_asset_id,
     } = body
 
     // Normalize to a list of {phone, params} regardless of shape.
@@ -175,6 +180,49 @@ export async function POST(request: Request) {
     }
     const templateRow = rawTemplateRow ?? null
 
+    const resolvedHeaderMediaAssetId =
+      header_media_asset_id || templateRow?.default_header_media_asset_id
+    let headerMediaId: string | undefined
+    if (resolvedHeaderMediaAssetId) {
+      const { data: asset, error: assetError } = await supabase
+        .from('whatsapp_media_assets')
+        .select(
+          'id, account_id, media_type, mime_type, original_filename, storage_path, meta_media_id, meta_uploaded_at',
+        )
+        .eq('account_id', accountId)
+        .eq('id', resolvedHeaderMediaAssetId)
+        .maybeSingle()
+      if (assetError || !asset) {
+        return NextResponse.json(
+          { error: 'Broadcast header media was not found for this account.' },
+          { status: 404 },
+        )
+      }
+      if (templateRow?.header_type !== asset.media_type) {
+        return NextResponse.json(
+          {
+            error: `This template requires a ${templateRow?.header_type ?? 'different'} header, but ${asset.media_type} was selected.`,
+          },
+          { status: 400 },
+        )
+      }
+      headerMediaId = await ensureMetaMediaId({
+        asset: asset as StoredWhatsAppMediaAsset,
+        phoneNumberId: config.phone_number_id,
+        accessToken,
+      })
+    } else if (
+      (templateRow?.header_type === 'image' ||
+        templateRow?.header_type === 'video' ||
+        templateRow?.header_type === 'document') &&
+      !templateRow.header_media_url
+    ) {
+      return NextResponse.json(
+        { error: `This template requires a ${templateRow.header_type} header.` },
+        { status: 400 },
+      )
+    }
+
     const results: BroadcastResult[] = []
     let sentCount = 0
     let failedCount = 0
@@ -207,7 +255,10 @@ export async function POST(request: Request) {
             templateName: template_name,
             language: template_language || 'en_US',
             template: templateRow ?? undefined,
-            messageParams: recipient.messageParams,
+            messageParams: {
+              ...(recipient.messageParams ?? {}),
+              headerMediaId,
+            },
             params: recipient.params ?? [],
           })
           sentMessageId = result.messageId

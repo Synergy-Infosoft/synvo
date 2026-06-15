@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import {
+  sendLocationMessage,
+  sendMediaMessage,
+  sendTemplateMessage,
+  sendTextMessage,
+} from '@/lib/whatsapp/meta-api'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import {
@@ -16,6 +21,10 @@ import {
 } from '@/lib/rate-limit'
 import type { MessageTemplate } from '@/types'
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard'
+import {
+  ensureMetaMediaId,
+  type StoredWhatsAppMediaAsset,
+} from '@/lib/whatsapp/media-assets'
 
 export async function POST(request: Request) {
   try {
@@ -67,6 +76,8 @@ export async function POST(request: Request) {
       template_language,
       template_params,
       template_message_params,
+      media_asset_id,
+      location,
       reply_to_message_id,
     } = body
 
@@ -88,6 +99,26 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: 'template_name is required for template messages' },
         { status: 400 }
+      )
+    }
+
+    const mediaMessageTypes = new Set(['image', 'video', 'audio', 'document'])
+    if (mediaMessageTypes.has(message_type) && !media_asset_id) {
+      return NextResponse.json(
+        { error: 'media_asset_id is required for media messages' },
+        { status: 400 },
+      )
+    }
+    if (
+      message_type === 'location' &&
+      (!Number.isFinite(location?.latitude) ||
+        !Number.isFinite(location?.longitude) ||
+        Math.abs(location.latitude) > 90 ||
+        Math.abs(location.longitude) > 180)
+    ) {
+      return NextResponse.json(
+        { error: 'A valid latitude and longitude are required.' },
+        { status: 400 },
       )
     }
 
@@ -229,6 +260,59 @@ export async function POST(request: Request) {
       templateRow = data ?? null
     }
 
+    const requestedAssetId =
+      media_asset_id ||
+      template_message_params?.headerMediaAssetId ||
+      templateRow?.default_header_media_asset_id
+    let mediaAsset: StoredWhatsAppMediaAsset | null = null
+    if (requestedAssetId) {
+      const { data, error } = await supabase
+        .from('whatsapp_media_assets')
+        .select(
+          'id, account_id, media_type, mime_type, original_filename, storage_path, meta_media_id, meta_uploaded_at',
+        )
+        .eq('account_id', accountId)
+        .eq('id', requestedAssetId)
+        .maybeSingle()
+      if (error || !data) {
+        return NextResponse.json(
+          { error: 'Media asset not found for this account.' },
+          { status: 404 },
+        )
+      }
+      mediaAsset = data
+    }
+    if (
+      mediaAsset &&
+      mediaMessageTypes.has(message_type) &&
+      mediaAsset.media_type !== message_type
+    ) {
+      return NextResponse.json(
+        { error: `Selected ${mediaAsset.media_type} cannot be sent as ${message_type}.` },
+        { status: 400 },
+      )
+    }
+    if (
+      mediaAsset &&
+      message_type === 'template' &&
+      templateRow?.header_type &&
+      mediaAsset.media_type !== templateRow.header_type
+    ) {
+      return NextResponse.json(
+        {
+          error: `This template requires a ${templateRow.header_type} header, but ${mediaAsset.media_type} was selected.`,
+        },
+        { status: 400 },
+      )
+    }
+    const mediaId = mediaAsset
+      ? await ensureMetaMediaId({
+          asset: mediaAsset,
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+        })
+      : undefined
+
     const attempt = async (phone: string): Promise<string> => {
       if (message_type === 'template') {
         const result = await sendTemplateMessage({
@@ -238,10 +322,39 @@ export async function POST(request: Request) {
           templateName: template_name,
           language: template_language || 'en_US',
           template: templateRow ?? undefined,
-          messageParams: template_message_params ?? undefined,
+          messageParams: {
+            ...(template_message_params ?? {}),
+            headerMediaId: mediaId,
+          },
           // Legacy body-only fallback — only consulted when
           // messageParams.body isn't set.
           params: template_params || [],
+          contextMessageId,
+        })
+        return result.messageId
+      }
+      if (mediaMessageTypes.has(message_type) && mediaAsset) {
+        const result = await sendMediaMessage({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          to: phone,
+          kind: message_type,
+          id: mediaId,
+          caption: content_text || undefined,
+          filename: mediaAsset.original_filename,
+          contextMessageId,
+        })
+        return result.messageId
+      }
+      if (message_type === 'location') {
+        const result = await sendLocationMessage({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          to: phone,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          name: location.name || undefined,
+          address: location.address || undefined,
           contextMessageId,
         })
         return result.messageId
@@ -313,7 +426,16 @@ export async function POST(request: Request) {
         sender_type: 'agent',
         content_type: message_type,
         content_text: content_text || null,
-        media_url: media_url || null,
+        media_url: mediaAsset
+          ? `/api/whatsapp/media-assets/${mediaAsset.id}`
+          : media_url || null,
+        media_asset_id: mediaAsset?.id || null,
+        media_filename: mediaAsset?.original_filename || null,
+        media_mime_type: mediaAsset?.mime_type || null,
+        location_latitude: location?.latitude ?? null,
+        location_longitude: location?.longitude ?? null,
+        location_name: location?.name || null,
+        location_address: location?.address || null,
         template_name: template_name || null,
         message_id: waMessageId,
         status: 'sent',

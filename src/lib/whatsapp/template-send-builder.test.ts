@@ -116,18 +116,27 @@ describe('buildSendComponents — header', () => {
     });
   });
 
-  it('prefers media id over url when both are available', () => {
+  it('uses an explicit send-time media id over a stored URL', () => {
     const components = buildSendComponents(
       row({
         header_type: 'document',
         header_handle: '4::aBc',
         header_media_url: 'https://x.com/doc.pdf',
       }),
+      { headerMediaId: '123456789' },
     );
     expect(components[0]).toEqual({
       type: 'header',
-      parameters: [{ type: 'document', document: { id: '4::aBc' } }],
+      parameters: [{ type: 'document', document: { id: '123456789' } }],
     });
+  });
+
+  it('never treats a template-review header handle as a media id', () => {
+    expect(() =>
+      buildSendComponents(
+        row({ header_type: 'image', header_handle: '4::review-handle' }),
+      ),
+    ).toThrow(/requires a media link or id/);
   });
 
   it('throws on media header with no link OR id available', () => {

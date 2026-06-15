@@ -9,6 +9,7 @@ import {
 } from '@/lib/whatsapp/template-validators'
 import { buildMetaTemplatePayload } from '@/lib/whatsapp/template-components'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
+import { loadTemplateHeaderMediaAsset } from '@/lib/whatsapp/template-default-media'
 
 /**
  * Shared upsert payload builder — both the Meta-failure path and the
@@ -41,6 +42,8 @@ function buildUpsertRow(
     header_content: payload.header_content ?? null,
     header_media_url: payload.header_media_url ?? null,
     header_handle: payload.header_handle ?? null,
+    default_header_media_asset_id:
+      payload.default_header_media_asset_id ?? null,
     body_text: payload.body_text,
     footer_text: payload.footer_text ?? null,
     buttons: payload.buttons ?? null,
@@ -133,6 +136,20 @@ export async function POST(request: Request) {
     } catch (e) {
       return NextResponse.json(
         { error: e instanceof Error ? e.message : 'Validation failed.' },
+        { status: 400 },
+      )
+    }
+
+    try {
+      await loadTemplateHeaderMediaAsset({
+        supabase,
+        accountId,
+        assetId: payload.default_header_media_asset_id,
+        headerType: payload.header_type,
+      })
+    } catch (e) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : 'Invalid default media.' },
         { status: 400 },
       )
     }

@@ -179,6 +179,13 @@ export interface Message {
   content_type: ContentType;
   content_text?: string;
   media_url?: string;
+  media_asset_id?: string | null;
+  media_filename?: string | null;
+  media_mime_type?: string | null;
+  location_latitude?: number | null;
+  location_longitude?: number | null;
+  location_name?: string | null;
+  location_address?: string | null;
   template_name?: string;
   message_id?: string;
   status: MessageStatus;
@@ -261,6 +268,7 @@ export interface MessageTemplate {
   header_content?: string;
   header_handle?: string;
   header_media_url?: string;
+  default_header_media_asset_id?: string | null;
   body_text: string;
   footer_text?: string;
   buttons?: TemplateButton[];
@@ -423,6 +431,7 @@ export interface SendTemplateStepConfig {
   template_name: string;
   language?: string;
   variables?: Record<string, string>;
+  header_media_asset_id?: string;
 }
 
 export interface TagStepConfig {

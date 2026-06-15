@@ -31,11 +31,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble } from "./message-bubble";
 import { MessageActions } from "./message-actions";
 import { MessageComposer } from "./message-composer";
 import { TemplatePicker } from "./template-picker";
+import {
+  AttachmentDialog,
+  type AttachmentMode,
+  type LocationDraft,
+} from "./attachment-dialog";
+import type { UploadedMediaAsset } from "./media-upload-field";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
 
@@ -148,6 +153,8 @@ export function MessageThread({
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const [attachmentMode, setAttachmentMode] = useState<AttachmentMode>("image");
+  const [attachmentModalOpen, setAttachmentModalOpen] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
@@ -473,6 +480,90 @@ export function MessageThread({
     [conversation, onNewMessage, onUpdateMessage]
   );
 
+  const handleOpenAttachment = useCallback((mode: AttachmentMode) => {
+    setAttachmentMode(mode);
+    setAttachmentModalOpen(true);
+  }, []);
+
+  const handleSendMedia = useCallback(
+    async (asset: UploadedMediaAsset, caption: string) => {
+      if (!conversation) return;
+      const tempId = `temp-${Date.now()}`;
+      onNewMessage({
+        id: tempId,
+        conversation_id: conversation.id,
+        sender_type: "agent",
+        content_type: asset.media_type === "sticker" ? "image" : asset.media_type,
+        content_text: caption || undefined,
+        media_url: asset.media_url,
+        media_asset_id: asset.id,
+        media_filename: asset.original_filename,
+        media_mime_type: asset.mime_type,
+        status: "sending",
+        created_at: new Date().toISOString(),
+      });
+      try {
+        const response = await fetch("/api/whatsapp/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: conversation.id,
+            message_type: asset.media_type,
+            media_asset_id: asset.id,
+            content_text: caption || undefined,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        onUpdateMessage(tempId, { status: "sent" });
+      } catch (error) {
+        onUpdateMessage(tempId, { status: "failed" });
+        throw error;
+      }
+    },
+    [conversation, onNewMessage, onUpdateMessage],
+  );
+
+  const handleSendLocation = useCallback(
+    async (location: LocationDraft) => {
+      if (!conversation) return;
+      const tempId = `temp-${Date.now()}`;
+      const label = location.name || location.address || "Location shared";
+      onNewMessage({
+        id: tempId,
+        conversation_id: conversation.id,
+        sender_type: "agent",
+        content_type: "location",
+        content_text: label,
+        location_latitude: location.latitude,
+        location_longitude: location.longitude,
+        location_name: location.name,
+        location_address: location.address,
+        status: "sending",
+        created_at: new Date().toISOString(),
+      });
+      try {
+        const response = await fetch("/api/whatsapp/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: conversation.id,
+            message_type: "location",
+            content_text: label,
+            location,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        onUpdateMessage(tempId, { status: "sent" });
+      } catch (error) {
+        onUpdateMessage(tempId, { status: "failed" });
+        throw error;
+      }
+    },
+    [conversation, onNewMessage, onUpdateMessage],
+  );
+
   const handleStatusChange = useCallback(
     async (status: ConversationStatus) => {
       if (!conversation) return;
@@ -498,6 +589,7 @@ export function MessageThread({
       values: {
         body: string[];
         headerText?: string;
+        headerMediaAssetId?: string;
         buttonParams?: Record<number, string>;
       },
     ) => {
@@ -534,6 +626,7 @@ export function MessageThread({
             template_message_params: {
               body: values.body,
               headerText: values.headerText,
+              headerMediaAssetId: values.headerMediaAssetId,
               buttonParams: values.buttonParams,
             },
             template_params: values.body,
@@ -939,10 +1032,10 @@ export function MessageThread({
 
       {/* Composer */}
       <MessageComposer
-        conversationId={conversation.id}
         sessionExpired={sessionInfo.expired}
         onSend={handleSend}
         onOpenTemplates={handleOpenTemplates}
+        onOpenAttachment={handleOpenAttachment}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
       />
@@ -951,6 +1044,13 @@ export function MessageThread({
         open={templateModalOpen}
         onOpenChange={setTemplateModalOpen}
         onSelect={handleSendTemplate}
+      />
+      <AttachmentDialog
+        open={attachmentModalOpen}
+        mode={attachmentMode}
+        onOpenChange={setAttachmentModalOpen}
+        onSendMedia={handleSendMedia}
+        onSendLocation={handleSendLocation}
       />
     </div>
   );

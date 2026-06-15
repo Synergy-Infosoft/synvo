@@ -62,7 +62,7 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
     if (!url) return;
 
     // Proxy URLs need auth fetch to create blob URL
-    if (url.startsWith("/api/whatsapp/media/")) {
+    if (url.startsWith("/api/whatsapp/")) {
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to load media");
@@ -185,7 +185,7 @@ function MessageContent({ message }: { message: Message }) {
         >
           <FileText className="h-5 w-5 shrink-0 text-slate-400" />
           <span className="truncate">
-            {message.content_text || "Document"}
+            {message.media_filename || message.content_text || "Document"}
           </span>
         </a>
       );
@@ -197,6 +197,31 @@ function MessageContent({ message }: { message: Message }) {
             <LayoutTemplate className="h-3 w-3" />
             Template
           </span>
+          {message.media_url && message.media_mime_type?.startsWith("image/") && (
+            <MediaImage url={message.media_url} alt="Template header" />
+          )}
+          {message.media_url && message.media_mime_type?.startsWith("video/") && (
+            <video
+              src={message.media_url}
+              controls
+              className="max-h-64 max-w-60 rounded-lg"
+            />
+          )}
+          {message.media_url &&
+            !message.media_mime_type?.startsWith("image/") &&
+            !message.media_mime_type?.startsWith("video/") && (
+              <a
+                href={`${message.media_url}?download`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mb-2 flex items-center gap-2 rounded-lg bg-slate-700/50 px-3 py-2 text-sm hover:bg-slate-700"
+              >
+                <FileText className="h-5 w-5 shrink-0 text-slate-400" />
+                <span className="truncate">
+                  {message.media_filename || "Template document"}
+                </span>
+              </a>
+            )}
           {message.content_text && (
             <p className="mt-1 whitespace-pre-wrap break-words text-sm">
               {message.content_text}
@@ -205,13 +230,29 @@ function MessageContent({ message }: { message: Message }) {
         </div>
       );
 
-    case "location":
+    case "location": {
+      const locationUrl =
+        message.location_latitude != null &&
+        message.location_longitude != null
+          ? `https://www.google.com/maps/search/?api=1&query=${message.location_latitude},${message.location_longitude}`
+          : null;
       return (
-        <div className="flex items-center gap-2 text-sm">
+        <a
+          href={locationUrl ?? undefined}
+          target={locationUrl ? "_blank" : undefined}
+          rel={locationUrl ? "noopener noreferrer" : undefined}
+          className="flex items-center gap-2 text-sm"
+        >
           <MapPin className="h-4 w-4 shrink-0 text-slate-400" />
-          <span>{message.content_text || "Location shared"}</span>
-        </div>
+          <span>
+            {message.location_name ||
+              message.location_address ||
+              message.content_text ||
+              "Location shared"}
+          </span>
+        </a>
       );
+    }
 
     case "interactive": {
       // Customer tapped a reply button or list row on a message the bot
